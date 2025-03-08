@@ -1,0 +1,8 @@
+[package]
+name = "q-learning-tictactoe"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rand = "0.9.0"
+iced = { version = "0.12.1", features = ["async-std"] }
