@@ -12,7 +12,7 @@ use std::fmt;
 use std::time::{Duration, Instant};
 use rand::prelude::IndexedRandom;
 
-const TRAIN_EPISODE: usize = 200000;
+const TRAIN_EPISODE: usize = 100000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Cell {
@@ -203,7 +203,7 @@ impl fmt::Display for Board {
 
 #[derive(Debug)]
 struct QLearningAgent {
-    q_table: HashMap<String, HashMap<(usize, usize), f64>>,
+    q_table: HashMap<String, HashMap<String, f64>>,
     alpha: f64,
     gamma: f64,
     epsilon: f64,
@@ -220,16 +220,16 @@ impl QLearningAgent {
             train: true
         }
     }
-    fn get_q_value(&mut self, state: &str, action: (usize, usize)) -> f64 {
+    fn get_q_value(&mut self, state: &str, action: &str) -> f64 {
         *self
             .q_table
             .entry(state.to_string())
             .or_insert(HashMap::new())
-            .entry(action)
+            .entry(action.to_string())
             .or_insert(0.0)
     }
 
-    fn update_q_value(&mut self, state: &str, action: (usize, usize), reward: f64, next_state: &str) {
+    fn update_q_value(&mut self, state: &str, action: &str, reward: f64, next_state: &str) {
         let max_q_next = self
             .q_table
             .get(next_state)
@@ -241,7 +241,7 @@ impl QLearningAgent {
         self.q_table
             .entry(state.to_string())
             .or_insert(HashMap::new())
-            .insert(action, new_q_value);
+            .insert(action.to_string(), new_q_value);
     }
 
     fn choose_action(&mut self, state: &str, available_moves: &Vec<(usize, usize)>, blocking_move: Option<(usize, usize)>) -> ((usize, usize),bool) {
@@ -257,8 +257,10 @@ impl QLearningAgent {
                 let best_action = available_moves
                     .iter()
                     .max_by(|&a, &b| {
-                        let q_a = actions.get(a).unwrap_or(&0.0);
-                        let q_b = actions.get(b).unwrap_or(&0.0);
+                        let str_a = format!("{},{}", a.0,a.1);
+                        let str_b = format!("{},{}", b.0,b.1);
+                        let q_a = actions.get(&str_a).unwrap_or(&0.0);
+                        let q_b = actions.get(&str_b).unwrap_or(&0.0);
                         q_a.partial_cmp(&q_b).unwrap()
                     }).unwrap();
                 (*best_action, false)
@@ -284,13 +286,14 @@ fn train_q_learning(agent: &mut QLearningAgent, episode: usize) {
             let blocking_move = game.find_blocking_move();
             let current_player = game.get_current_player().clone();
             let (action,is_blocking_move) = agent.choose_action(&state, &moves, blocking_move);
+            let action_hash = format!("{},{}", action.0, action.1);
             game.make_move(action.0,action.1);
             let reward = if game.check_winner().unwrap_or(Cell::Empty) == current_player.marker { 1.0 }
                                 else if is_blocking_move {1.0}
                                 else if game.is_draw(){0.5}
                                 else {0.0};
             let next_state = game.board_state();
-            agent.update_q_value(&state,action,reward,&next_state);
+            agent.update_q_value(&state,&action_hash,reward,&next_state);
         }
     }
 }
@@ -333,7 +336,7 @@ impl Application for TicTacToeApp {
     type Flags = ();
 
     fn new(_flags: ()) -> (Self, Command<Message>) {
-        let mut agent: QLearningAgent = QLearningAgent::new(0.12,0.9,0.3);
+        let mut agent: QLearningAgent = QLearningAgent::new(0.08,0.9,0.2);
         train_q_learning(&mut agent,TRAIN_EPISODE);
         agent.train = false;
         (
@@ -430,10 +433,6 @@ impl Application for TicTacToeApp {
                     && self.board.get_current_player().marker == Cell::O {
                     self.ai_thinking = true;
                     self.ai_turn_start = Some(Instant::now());
-                    // return Command::perform(
-                    //     async { },
-                    //     |_| Message::AIMove
-                    // );
                 }
             }
         }
