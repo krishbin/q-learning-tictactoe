@@ -8,11 +8,14 @@ use iced::widget::{
 use rand::Rng;
 use std::collections::HashMap;
 use std::default::Default;
-use std::fmt;
+use std::{fmt, fs};
 use std::time::{Duration, Instant};
 use rand::prelude::IndexedRandom;
+use serde::{Serialize, Deserialize};
+use serde_json;
 
-const TRAIN_EPISODE: usize = 100000;
+const TRAIN_EPISODE: usize = 300000;
+const FILENAME: &str = "data.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Cell {
@@ -26,18 +29,18 @@ struct Player {
     marker: Cell, // X or O
 }
 
-// impl Player {
-//     fn new(marker: Cell) -> Self {
-//         Player { marker }
-//     }
-//     fn opponent(&self) -> Self {
-//         if self.marker == Cell::X {
-//             Player::new(Cell::O)
-//         } else if self.marker == Cell::O {
-//             Player::new(Cell::X)
-//         } else { Player::new(Cell::Empty) }
-//     }
-// }
+impl Player {
+    fn new(marker: Cell) -> Self {
+        Player { marker }
+    }
+    fn opponent(&self) -> Self {
+        if self.marker == Cell::X {
+            Player::new(Cell::O)
+        } else if self.marker == Cell::O {
+            Player::new(Cell::X)
+        } else { Player::new(Cell::Empty) }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct MoveStatus {
@@ -201,7 +204,7 @@ impl fmt::Display for Board {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug,Serialize,Deserialize)]
 struct QLearningAgent {
     q_table: HashMap<String, HashMap<String, f64>>,
     alpha: f64,
@@ -244,13 +247,13 @@ impl QLearningAgent {
             .insert(action.to_string(), new_q_value);
     }
 
-    fn choose_action(&mut self, state: &str, available_moves: &Vec<(usize, usize)>, blocking_move: Option<(usize, usize)>) -> ((usize, usize),bool) {
+    fn choose_action(&mut self, state: &str, available_moves: &Vec<(usize, usize)>, blocking_move: Option<(usize, usize)>) -> ((usize, usize),bool,bool) {
         if blocking_move.is_some() && self.train {
-            (blocking_move.unwrap(), true)
+            (blocking_move.unwrap(), true, false)
         } else {
         let mut rng = rand::rng();
         if (rng.random::<f64>() < self.epsilon) && self.train {
-            (*available_moves.choose(&mut rng).unwrap(),false)
+            (*available_moves.choose(&mut rng).unwrap(),false, true)
         } else {
             let q_values = self.q_table.get_mut(state);
             if let Some(actions) = q_values {
@@ -263,39 +266,79 @@ impl QLearningAgent {
                         let q_b = actions.get(&str_b).unwrap_or(&0.0);
                         q_a.partial_cmp(&q_b).unwrap()
                     }).unwrap();
-                (*best_action, false)
+                (*best_action, false, false)
             } else {
-                (*available_moves.choose(&mut rng).unwrap(),false)
+                (*available_moves.choose(&mut rng).unwrap(),false, false)
             }
         }
         }
     }
+    fn save_to_file(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let json = serde_json::to_string(&self)?;
+        fs::write(FILENAME, json)?;
+        Ok(())
+    }
 
 }
 
-fn train_q_learning(agent: &mut QLearningAgent, episode: usize) {
-    for _ in 0..episode {
+fn train_q_learning(agent: &mut QLearningAgent, episodes: usize) {
+    let mut exploration: i64 = 0;
+    let mut exploitation: i64 = 0;
+    let mut total_loop: i64 = 0;
+    let min_epsilon: f64 = 0.1;
+    let epsilon_start: f64 = agent.epsilon;
+    for episode in 0..episodes {
         let mut game = Board::new();
+        let mut state_history: Vec<String> = Vec::new();
+        let mut action_history: Vec<String> = Vec::new();
         loop {
-            let (game_over,_) = game.is_game_over();
+            let current_player = game.get_current_player().clone();
+            let prev_player = current_player.opponent();
+            let (game_over,winner) = game.is_game_over();
             if game_over {
+                // if we win the game we propagate reward to the previous state space
+                assert!(state_history.len() > 2 , "state history is less than three which is a undesired condition");
+                action_history.pop();
+                if winner.unwrap_or(Cell::Empty) == prev_player.marker {
+                    let mut propagation_reward = 0.7;
+                    let decay_percentage = 0.7;
+                    let action_val = action_history.pop().unwrap();
+                    //assert!(action.is_some());
+                    for states in state_history.windows(2) {
+                        agent.update_q_value(&states[0],&action_val,propagation_reward,&states[1]);
+                        propagation_reward = (agent.alpha * decay_percentage).min(0.1);
+                    }
+                }
                 break;
             };
             let state = game.board_state();
+            state_history.push(state.clone());
             let moves = game.available_moves();
             let blocking_move = game.find_blocking_move();
-            let current_player = game.get_current_player().clone();
-            let (action,is_blocking_move) = agent.choose_action(&state, &moves, blocking_move);
+            let (action,is_blocking_move,explore) = agent.choose_action(&state, &moves, blocking_move);
+            if explore {exploration += 1} else {exploitation += 1;}
+            total_loop += 1;
             let action_hash = format!("{},{}", action.0, action.1);
             game.make_move(action.0,action.1);
+            action_history.push(action_hash.clone());
+            let empty_cells = state.chars().into_iter().filter(|&c| c == '-').count();
+            let mut blocking_reward = 0.4;
+            if empty_cells > 5 {
+                blocking_reward = 0.9;
+            }
             let reward = if game.check_winner().unwrap_or(Cell::Empty) == current_player.marker { 1.0 }
-                                else if is_blocking_move {1.0}
-                                else if game.is_draw(){0.5}
+                                else if is_blocking_move {blocking_reward}
+                                else if game.is_draw(){0.3}
                                 else {0.0};
             let next_state = game.board_state();
             agent.update_q_value(&state,&action_hash,reward,&next_state);
         }
+        agent.epsilon = (epsilon_start - episode as f64 * (epsilon_start - min_epsilon)/TRAIN_EPISODE as f64).max(min_epsilon);
     }
+    if agent.save_to_file().is_ok() {
+        println!("Saved game data to {}", FILENAME);
+    };
+    println!("Exploration: {:.2}, Exploitation: {:.2}", (exploration as f64)/(total_loop as f64), (exploitation as f64)/(total_loop as f64));
 }
 
 impl Default for Board {
@@ -336,7 +379,7 @@ impl Application for TicTacToeApp {
     type Flags = ();
 
     fn new(_flags: ()) -> (Self, Command<Message>) {
-        let mut agent: QLearningAgent = QLearningAgent::new(0.08,0.9,0.2);
+        let mut agent: QLearningAgent = QLearningAgent::new(0.08,0.7,0.9);
         train_q_learning(&mut agent,TRAIN_EPISODE);
         agent.train = false;
         (
@@ -402,7 +445,7 @@ impl Application for TicTacToeApp {
                 let blocking_move = self.board.find_blocking_move();
                 if !available_moves.is_empty() {
                     let state = self.board.board_state();
-                    let (action,_) = self.ai_agent.choose_action(&state, &available_moves,blocking_move);
+                    let (action,_,_) = self.ai_agent.choose_action(&state, &available_moves,blocking_move);
                     let (move_status, winner) = self.board.make_move(action.0,action.1);
                     self.game_over = move_status.game_over;
                     self.winner = winner;
