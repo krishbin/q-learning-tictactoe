@@ -1,3 +1,9 @@
+// Copyright (c) 2025 Krishbin Paudel krishbinp@outlook.com
+// SPDX-License-Identifier: MIT
+//
+// This file is part of krishbin/q-learning-tic-tac-toe and is licensed under the MIT or Apache 2.0 license.
+// See the LICENSE file for details.
+
 use iced::{
     time, alignment, executor, Application, Element,
     Length, Settings, Subscription, Theme, Command
